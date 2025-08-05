@@ -12,10 +12,11 @@ const { check, validationResult } = require('express-validator'); //for input va
 
 const router = express.Router(); //create express router
 
-//route POST /api/auth/signup
-//signup route (register a new user)
-//access-public
-//updated with validation prevent empty titles, invalid emails and to avoid garbage text for salary
+// route     POST /api/auth/signup
+// desc      Register a new user with optional role (default: candidate)
+// access    Public
+// updated   with role support and validation
+
 router.post(
   '/signup',
   [
@@ -31,29 +32,41 @@ router.post(
       return next(new CustomError('Validation failed', 400));
     }
 
-    const { name, email, password } = req.body;
+    const { name, email, password, role } = req.body;
 
     try {
-      //check if user already exists in DB
+      // 🔁 Check if user already exists
       const existingUser = await User.findOne({ email });
       if (existingUser) {
         return next(new CustomError('User already exists', 400));
       }
 
-      //hash password for secure storage
+      // 🛡️ Prevent users from signing up as admin
+      const allowedRoles = ['candidate', 'recruiter'];
+      const assignedRole = allowedRoles.includes(role) ? role : 'candidate'; // fallback to 'candidate'
+
+      // 🔐 Hash the password before saving
       const hashedPassword = await bcrypt.hash(password, 10);
 
-      //create new user instance and save to DB
-      const newUser = new User({ name, email, password: hashedPassword });
+      // 🧾 Create and save the new user
+      const newUser = new User({
+        name,
+        email,
+        password: hashedPassword,
+        role: assignedRole,
+      });
+
       await newUser.save();
 
-      //send success response
+      // ✅ Send success response
       res.status(201).json({ msg: 'User registered successfully' });
     } catch (err) {
-      next(err); //pass to global error handler
+      //pass any server errors to global error handler
+      next(err);
     }
   }
 );
+
 
 //route   POST /api/auth/login
 //desc    Login route (authenticate user and return token)
