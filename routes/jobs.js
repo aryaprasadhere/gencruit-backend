@@ -2,21 +2,24 @@
 
 //imported required modules
 const express = require('express');
-
-const { check, validationResult } = require('express-validator'); //fr request body validation
+const { check, validationResult } = require('express-validator'); //for request body validation
 const Job = require('../models/Job'); //Mongoose Job model
 const auth = require('../middleware/auth'); //middleware to protect routes
 const CustomError = require('../utils/customError'); //import custom error utility
+const authorize = require('../middleware/authorize'); //to restrict job creation to recruiters and admins
 
 const router = express.Router(); //initialize router
 
-//CREATE JOB
-//route   POST /api/jobs
-//create a new job
-//access  Private,only logged-in users can create jobs
+/**
+ * CREATE JOB
+ * route   POST /api/jobs
+ * desc    create a new job
+ * access  Private, only logged-in users with 'recruiter' or 'admin' roles
+ */
 router.post(
   '/',
   auth, //protect route with JWT-based auth
+  authorize(['recruiter', 'admin']),  //only allow recruiters or admins to create jobs
   [
     //validation rules using express-validator
     check('title', 'Job title is required').notEmpty(),
@@ -29,7 +32,7 @@ router.post(
     //check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      //If errors exist, send it to client
+      //If errors exist, pass to custom error handler
       return next(new CustomError('Validation failed', 400));
     }
 
@@ -37,7 +40,7 @@ router.post(
     const { title, company, description, location, salary } = req.body;
 
     try {
-      //create a new job instance with data&user from token
+      //create a new job instance with data & user from token
       const newJob = new Job({
         title,
         company,
@@ -58,99 +61,103 @@ router.post(
   }
 );
 
-//GET ALL JOBS 
-//route   GET /api/jobs
-//get all jobs for the logged-in user
-//access  Private
-
+/**
+ * GET ALL JOBS 
+ * route   GET /api/jobs
+ * desc    get all jobs for the logged-in user with optional filters, search, and pagination
+ * access  Private
+ */
 router.get('/', auth, async (req, res, next) => {
   try {
-    //Extract query params from the URL
+    //Extract query params from the URL (with defaults)
     const {
-      page = 1,            // current page number (default is 1)
-      limit = 10,          // how many jobs per page (default is 10)
-      search = '',         // keyword to search in job title/description
-      company,             // filter by company name
-      location             // filter by location
+      page = 1,            
+      limit = 10,          
+      search = '',         
+      company,             
+      location,            
     } = req.query;
 
-    //Convert page and limit to numbers
+    //Convert page and limit to numbers for pagination
     const pageNumber = parseInt(page, 10);
     const limitNumber = parseInt(limit, 10);
     const skip = (pageNumber - 1) * limitNumber;
 
-    //Start building the query object (always filter by logged-in user)
+    //Always filter jobs by the logged-in user's ID
     const query = { user: req.user.userId };
 
-    //Add search condition if search term is provided
+    //Add keyword search filter (title or description)
     if (search) {
       query.$or = [
-        { title: { $regex: search, $options: 'i' } },        // search in title (case-insensitive)
-        { description: { $regex: search, $options: 'i' } }   // search in description
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } }
       ];
     }
 
-    //Add filter for company if provided
+    //Filter by company name if provided
     if (company) {
-      query.company = { $regex: company, $options: 'i' };    // case-insensitive match
+      query.company = { $regex: company, $options: 'i' };
     }
 
-    //Add filter for location if provided
+    //Filter by location if provided
     if (location) {
       query.location = { $regex: location, $options: 'i' };
     }
 
-    //Get total number of jobs matching the query (for pagination)
+    //Get total number of jobs matching the query (for pagination info)
     const totalJobs = await Job.countDocuments(query);
 
-    //Fetch jobs with pagination and sorting
+    //Fetch jobs with pagination and sorting (newest first)
     const jobs = await Job.find(query)
-      .sort({ createdAt: -1 })       // sort by newest first
-      .skip(skip)                    // skip previous pages
-      .limit(limitNumber);           // limit to current page
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNumber);
 
-    //send response with jobs and pagination info
+    //Send response with jobs and pagination details
     res.json({
       success: true,
-      total: totalJobs,               // total matching jobs
-      page: pageNumber,               // current page
-      totalPages: Math.ceil(totalJobs / limitNumber),  // total number of pages
-      jobs                             // jobs on the current page
+      total: totalJobs,
+      page: pageNumber,
+      totalPages: Math.ceil(totalJobs / limitNumber),
+      jobs,
     });
   } catch (err) {
-    next(err); // pass any errors to global error handler
+    next(err);
   }
 });
 
-//GET SINGLE JOB 
-//route   GET /api/jobs/:id
-//get a single job by ID
-//access  Private
+/**
+ * GET SINGLE JOB 
+ * route   GET /api/jobs/:id
+ * desc    get a single job by ID (must belong to current user)
+ * access  Private
+ */
 router.get('/:id', auth, async (req, res, next) => {
   try {
-    //find job by ID&ensure it belongs to the current user
+    //find job by ID & ensure it belongs to the current user
     const job = await Job.findOne({ _id: req.params.id, user: req.user.userId });
 
     if (!job) {
-      //if no such job,404
       return next(new CustomError('Job not found', 404));
     }
 
-    res.json(job); //return the job
+    res.json(job);
   } catch (err) {
-    next(err); //pass to global error handler
+    next(err);
   }
 });
 
-//UPDATE JOB 
-//route   PUT /api/jobs/:id
-//to update a job
-//access  Private
+/**
+ * UPDATE JOB 
+ * route   PUT /api/jobs/:id
+ * desc    update a job (only fields provided will be updated)
+ * access  Private
+ */
 router.put(
   '/:id',
   auth,
   [
-    //optional validations(only if the fields are present)
+    //optional validations (only if the fields are present)
     check('title', 'Job title is required').optional().notEmpty(),
     check('company', 'Company name is required').optional().notEmpty(),
     check('description', 'Description must be at least 10 characters').optional().isLength({ min: 10 }),
@@ -162,41 +169,41 @@ router.put(
     const errors = validationResult(req);
     if (!errors.isEmpty()) return next(new CustomError('Validation failed', 400));
 
-    //destructure updated values from request body
     const { title, company, description, location, salary } = req.body;
 
     try {
-      //fnd the job by ID&user to ensure ownership
+      //find the job by ID & user to ensure ownership
       let job = await Job.findOne({ _id: req.params.id, user: req.user.userId });
 
       if (!job) {
         return next(new CustomError('Job not found', 404));
       }
 
-      //update only the fields that are provided
-      job.title = title || job.title;
-      job.company = company || job.company;
-      job.description = description || job.description;
-      job.location = location || job.location;
-      job.salary = salary || job.salary;
+      //update only the provided fields
+      job.title = title ?? job.title;
+      job.company = company ?? job.company;
+      job.description = description ?? job.description;
+      job.location = location ?? job.location;
+      job.salary = salary ?? job.salary;
 
-      //save the updated job
+      //save and return the updated job
       const updatedJob = await job.save();
-
-      res.json(updatedJob); //return the updated job
+      res.json(updatedJob);
     } catch (err) {
-      next(err); //pass to global error handler
+      next(err);
     }
   }
 );
 
-//DELETE JOB 
-//route   DELETE /api/jobs/:id
-//delete a job by ID
-//access  Private
+/**
+ * DELETE JOB 
+ * route   DELETE /api/jobs/:id
+ * desc    delete a job by ID (must belong to current user)
+ * access  Private
+ */
 router.delete('/:id', auth, async (req, res, next) => {
   try {
-    //find&delete the job if it belongs to the user
+    //find & delete the job if it belongs to the user
     const job = await Job.findOneAndDelete({ _id: req.params.id, user: req.user.userId });
 
     if (!job) {
@@ -205,9 +212,8 @@ router.delete('/:id', auth, async (req, res, next) => {
 
     res.json({ msg: 'Job deleted successfully' }); 
   } catch (err) {
-    next(err); //pass to global error handler
+    next(err);
   }
 });
 
-module.exports = router; //export the router so it can be used in index.js
-
+module.exports = router;

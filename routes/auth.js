@@ -1,32 +1,39 @@
-//routes/auth.js
+// routes/auth.js
 
-//required modules
+// =============================
+// Required Modules
+// =============================
 const express = require('express');
-const bcrypt = require('bcryptjs'); //for hashing passworrds
-const jwt = require('jsonwebtoken'); //for creating jwt token
-const User = require('../models/User'); //Mongoose model for user
-const auth = require('../middleware/auth'); //middleware to protect routes
-const CustomError = require('../utils/customError'); //custom error handler utility
+const jwt = require('jsonwebtoken'); // for creating JWT tokens
+const { check, validationResult } = require('express-validator'); // for input validation
 
-const { check, validationResult } = require('express-validator'); //for input validation
+// =============================
+// Local Imports
+// =============================
+const User = require('../models/User'); // Mongoose model for user
+const auth = require('../middleware/auth'); // middleware to protect routes
+const CustomError = require('../utils/customError'); // custom error handler utility
 
-const router = express.Router(); //create express router
+// =============================
+// Router Setup
+// =============================
+const router = express.Router();
 
-// route     POST /api/auth/signup
-// desc      Register a new user with optional role (default: candidate)
-// access    Public
-// updated   with role support and validation
-
+// =============================
+// @route   POST /api/auth/signup
+// @desc    Register a new user with optional role (default: candidate)
+// @access  Public
+// =============================
 router.post(
   '/signup',
   [
-    //validation middleware
+    // Validation middleware for incoming data
     check('name', 'Name is required').notEmpty(),
     check('email', 'Please include a valid email').isEmail(),
     check('password', 'Password must be at least 6 characters').isLength({ min: 6 }),
   ],
   async (req, res, next) => {
-    //handle validation errors
+    // Handle validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return next(new CustomError('Validation failed', 400));
@@ -35,86 +42,104 @@ router.post(
     const { name, email, password, role } = req.body;
 
     try {
-      // 🔁 Check if user already exists
+      // Check if user already exists
       const existingUser = await User.findOne({ email });
       if (existingUser) {
         return next(new CustomError('User already exists', 400));
       }
 
-      // 🛡️ Prevent users from signing up as admin
+      // Prevent users from signing up as admin directly
       const allowedRoles = ['candidate', 'recruiter'];
-      const assignedRole = allowedRoles.includes(role) ? role : 'candidate'; // fallback to 'candidate'
+      const assignedRole = allowedRoles.includes(role) ? role : 'candidate';
 
-      // 🔐 Hash the password before saving
-      const hashedPassword = await bcrypt.hash(password, 10);
-
-      // 🧾 Create and save the new user
+      // Create and save the new user (password hashing is handled in User model pre-save hook)
       const newUser = new User({
         name,
         email,
-        password: hashedPassword,
+        password,
         role: assignedRole,
       });
 
       await newUser.save();
 
-      // ✅ Send success response
-      res.status(201).json({ msg: 'User registered successfully' });
+      // Create JWT token with user ID and role
+      const token = jwt.sign(
+        { userId: newUser._id, role: newUser.role },
+        process.env.JWT_SECRET,
+        { expiresIn: '1h' }
+      );
+
+      // Send success response
+      res.status(201).json({
+        token,
+        user: {
+          id: newUser._id,
+          name: newUser.name,
+          email: newUser.email,
+          role: newUser.role,
+        },
+      });
     } catch (err) {
-      //pass any server errors to global error handler
-      next(err);
+      next(err); // Pass any server errors to global error handler
     }
   }
 );
 
-
-//route   POST /api/auth/login
-//desc    Login route (authenticate user and return token)
-//access  Public
+// =============================
+// @route   POST /api/auth/login
+// @desc    Authenticate user & return token
+// @access  Public
+// =============================
 router.post('/login', async (req, res, next) => {
-  //extract email and password from request body
   const { email, password } = req.body;
 
   try {
-    //Find the user by email
+    // Find user by email
     const user = await User.findOne({ email });
 
-    //If user doesn't exist, return 400 error
-    if (!user) return next(new CustomError('Invalid credentials', 400));
+    if (!user) {
+      return next(new CustomError('Invalid credentials', 400));
+    }
 
-    //Compare entered password with hashed password in DB
-    const isMatch = await bcrypt.compare(password, user.password);
+    // Compare entered password with hashed password using model method
+    const isMatch = await user.matchPassword(password);
+    if (!isMatch) {
+      return next(new CustomError('Invalid credentials', 400));
+    }
 
-    //If password doesn't match, return 400 error
-    if (!isMatch) return next(new CustomError('Invalid credentials', 400));
-
-    //Create JWT token with user's ID
+    // Create JWT token
     const token = jwt.sign(
-      { userId: user._id },         //payload
-      process.env.JWT_SECRET,       //secret key from .env
-      { expiresIn: '1h' }           //token valid for 1 hour
+      { userId: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
     );
 
-    //Respond with token and minimal user info (excluding password)
+    // Respond with token and minimal user info
     res.json({
       token,
       user: {
         id: user._id,
         name: user.name,
-        email: user.email
-      }
+        email: user.email,
+        role: user.role,
+      },
     });
   } catch (err) {
-    next(err); //pass to global error handler
+    next(err);
   }
 });
 
-//route GET /api/auth/protected
-//protected test route
-// access-private(requires token)
+// =============================
+// @route   GET /api/auth/protected
+// @desc    Test protected route
+// @access  Private (requires token)
+// =============================
 router.get('/protected', auth, (req, res) => {
   res.json({ msg: `Hello ${req.user.userId}, you're authorized!` });
 });
 
-//export router for use in main index.js
+// =============================
+// Export Router
+// =============================
 module.exports = router;
+
